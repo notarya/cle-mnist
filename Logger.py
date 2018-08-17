@@ -7,7 +7,7 @@ import os
 Example:
 
 # set up tensorboard logger to save at end of each epoch
-logger = LoggerX('test_mnist', 'mnist_data', batch_size=64, save_freq=len(train_loader))
+logger = LoggerX('test_mnist', 'mnist_data', save_freq=len(train_loader))
 
 # initialize model metrics with batch size and number of expected batches
 model_metrics = CalculateMetrics(batch_size=args.batch_size, batches_per_epoch=len(train_loader))
