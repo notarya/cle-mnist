@@ -14,7 +14,7 @@ from torchvision import datasets, transforms
 from prepare_data import prepare_data
 from model import Softmax, TwoLayer, ConvNet
 from utilities import save_checkpoint, mkdir_p
-
+from Logger import *
 
 def main(args):
     # reproducibility
@@ -56,17 +56,23 @@ def main(args):
     best_val_loss = float('inf')
     best_val_acc = 0
 
+    # set up tensorboard logger
+    logger = LoggerX('test_mnist', 'mnist_data', 25)
+
     # loop over epochs
     for epoch in range(args.epochs):
         print('\n================== TRAINING ==================')
         model.train() # set model to training mode
-
         # set up training metrics we want to track
         correct = 0
         train_num = len(train_loader.sampler)
 
+        # metrics from logger
+        model_metrics = CalculateMetrics(batch_size=args.batch_size, batches_per_epoch=len(train_loader))
+
         for ix, (img, label) in enumerate(train_loader): # iterate over training batches
             img, label = img.to(device), label.to(device) # get data, send to gpu if needed
+
             optimizer.zero_grad() # clear parameter gradients from previous training update
             output = model(img) # forward pass
             loss = F.cross_entropy(output, label) # calculate network loss
@@ -74,16 +80,32 @@ def main(args):
             optimizer.step() # take an optimization step to update model's parameters
 
             pred = output.max(1, keepdim=True)[1] # get the index of the max logit
-            correct += pred.eq(label.view_as(pred)).sum().item() # add to running total of hits
+            # correct += pred.eq(label.view_as(pred)).sum().item() # add to running total of hits
 
-            if ix % args.log_interval == 0: # maybe log current metrics to terminal
+            # convert this data to binary for the sake of testing the metrics functionality
+            label[label < 5] = 0
+            label[label > 0] = 1
+
+            pred[pred < 5] = 0
+            pred[pred > 0] = 1
+            ######
+
+            scores_dict = model_metrics.update_scores(label, pred)
+
+            if ix % args.log_interval == 0:
+                # log the metrics to tensorboard X, track best model according to current weighted average accuracy
+                logger.log(model, optimizer, loss.item(),
+                           track_score=scores_dict['weighted_acc']/model_metrics.bn,
+                           scores_dict=scores_dict,
+                           epoch=epoch, bn=model_metrics.bn,
+                           batches_per_epoch=model_metrics.batches_per_epoch)
                 print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                    epoch, (ix + 1) * len(img), train_num,
-                    100. * ix / len(train_loader), loss.item()))
+                    epoch, model_metrics.bn, model_metrics.batches_per_epoch,
+                    (model_metrics.bn/model_metrics.batches_per_epoch)*100, loss.item()))
 
         # print whole epoch's training accuracy; useful for monitoring overfitting
-        print('Train Accuracy: {}/{} ({:.0f}%)\n'.format(
-            correct, train_num, 100. * correct / train_num))
+        print('Train Accuracy: ({:.0f}%)'.format(
+            model_metrics.w_accuracy*100))
 
         if evaluate:
             print('\n================== VALIDATION ==================')
@@ -138,7 +160,7 @@ def main(args):
 
     print('\n================== TESTING ==================')
     # load best model from training run (according to validation accuracy)
-    check = torch.load(checkpoint_file + '-best.pth.tar')
+    check = torch.load(logger.best_path)
     model.load_state_dict(check['state_dict'])
     model.eval() # set model to evaluate mode
 
@@ -147,6 +169,7 @@ def main(args):
     test_correct = 0
     test_num = len(test_loader.sampler)
 
+    test_metrics = CalculateMetrics(batch_size=args.batch_size, batches_per_epoch=test_num)
     # disable autograd here (replaces volatile flag from v0.3.1 and earlier)
     with torch.no_grad():
         for img, label in test_loader:
@@ -155,12 +178,12 @@ def main(args):
             # sum up batch loss
             test_loss += F.cross_entropy(output, label, size_average=False).item()
             pred = output.max(1, keepdim=True)[1] # get the index of the max logit
-            test_correct += pred.eq(label.view_as(pred)).sum().item()
+            test_scores = test_metrics.update_scores(label, pred)
+            logger.log(model, optimizer, test_loss, test_scores['weighted_acc'], test_scores, phase='test')
 
     test_loss /= test_num
-    print('Test set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
-        test_loss, test_correct, test_num,
-        100. * test_correct / test_num))
+    print('Test set: Average loss: {:.4f}, Accuracy: ({:.0f}%)\n'.format(
+        test_loss, test_metrics['weighted_acc']*100))
 
     print('Final model stored at "{}".'.format(checkpoint_file + '-best.pth.tar'))
 
